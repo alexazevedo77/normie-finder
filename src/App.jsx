@@ -3,7 +3,6 @@ import { useState, useCallback, useRef } from "react";
 export default function App() {
   const [img, setImg] = useState(null);
   const [b64, setB64] = useState(null);
-  const [mediaType, setMediaType] = useState("image/jpeg");
   const [thresh, setThresh] = useState(50);
   const [results, setResults] = useState([]);
   const [scanning, setScanning] = useState(false);
@@ -20,25 +19,37 @@ export default function App() {
 
   const load = (file) => {
     if (!file?.type.startsWith("image/")) return;
-    setImg(URL.createObjectURL(file));
     setResults([]); setErr(null); setPhase("idle"); setDebugLog([]);
 
-    // Convert any image format to JPEG via canvas to ensure compatibility
-    const url = URL.createObjectURL(file);
+    const objectUrl = URL.createObjectURL(file);
+    setImg(objectUrl);
+
+    // Use canvas to normalize to JPEG — guarantees clean base64 for Anthropic API
     const image = new Image();
     image.onload = () => {
+      // Cap at 512px max dimension to keep payload small
+      const MAX = 512;
+      let { width, height } = image;
+      if (width > MAX || height > MAX) {
+        const ratio = Math.min(MAX / width, MAX / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
       const canvas = document.createElement("canvas");
-      canvas.width = image.width;
-      canvas.height = image.height;
+      canvas.width = width;
+      canvas.height = height;
       const ctx = canvas.getContext("2d");
-      ctx.drawImage(image, 0, 0);
-      // Always export as JPEG — Anthropic supports: jpeg, png, gif, webp
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-      setB64(dataUrl.split(",")[1]);
-      setMediaType("image/jpeg");
-      URL.revokeObjectURL(url);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(image, 0, 0, width, height);
+      // Get pure base64 without the data URL prefix
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+      const pureBase64 = dataUrl.split(",")[1];
+      setB64(pureBase64);
+      console.log("Image loaded, base64 length:", pureBase64.length, "chars");
     };
-    image.src = url;
+    image.onerror = () => setErr("Failed to load image. Try a different file.");
+    image.src = objectUrl;
   };
 
   const onDrop = useCallback((e) => { e.preventDefault(); load(e.dataTransfer.files[0]); }, []);
@@ -47,46 +58,50 @@ export default function App() {
     const res = await fetch("/api/compare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageBase64: b64, mediaType, nftUrl }),
+      body: JSON.stringify({ imageBase64: b64, nftUrl }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error + (data.detail ? `: ${data.detail}` : ""));
+    if (!res.ok) throw new Error(data.error + (data.detail ? ` — ${data.detail}` : ""));
     return data;
   };
 
   const run = async () => {
-    if (!b64) return setErr("Upload an image first.");
+    if (!b64) return setErr("Upload an image first and wait for it to process.");
     setErr(null); setDebugLog([]); setScanning(true); setResults([]); setPhase("fetching");
     try {
-      log("Fetching NFTs from /api/nfts...");
+      log("Fetching NFTs...");
       const res = await fetch("/api/nfts?limit=30");
       const nftData = await res.json();
-      if (!res.ok) throw new Error(nftData.error + (nftData.detail ? `: ${nftData.detail}` : ""));
+      if (!res.ok) throw new Error(nftData.error || "Failed to fetch NFTs");
 
       const { nfts = [] } = nftData;
       const valid = nfts.filter(n => n.display_image_url || n.image_url);
-      log(`Got ${valid.length} NFTs with images`);
+      log(`Got ${valid.length} NFTs ✓`);
       if (valid.length === 0) throw new Error("No NFTs returned. Check OPENSEA_API_KEY in Vercel.");
 
       setProg({ n: 0, total: valid.length });
       setPhase("analyzing");
 
       const scored = [];
+      let firstSuccess = false;
       for (let i = 0; i < valid.length; i++) {
         const nft = valid[i];
         const url = nft.display_image_url || nft.image_url;
         try {
           const { score, reason } = await compare(url);
-          scored.push({ ...nft, score: Math.max(0, Math.min(100, Number(score) || 0)), reason, url });
+          const safeScore = Math.max(0, Math.min(100, Number(score) || 0));
+          scored.push({ ...nft, score: safeScore, reason, url });
           setResults([...scored].sort((a, b) => b.score - a.score));
-          if (i === 0) log(`First score: ${score}% — API working ✓`);
+          if (!firstSuccess) { log(`Scoring works! First score: ${safeScore}% ✓`); firstSuccess = true; }
         } catch (e) {
-          log(`⚠ NFT ${i + 1} failed: ${e.message.slice(0, 80)}`);
-          if (i === 0) throw new Error(`Compare API failed: ${e.message}`);
+          const msg = e.message.slice(0, 100);
+          log(`⚠ #${i + 1} failed: ${msg}`);
+          // Only abort on first failure to expose the real error
+          if (i === 0) throw new Error(e.message);
         }
         setProg({ n: i + 1, total: valid.length });
       }
-      log(`Done! ${scored.length} NFTs scored.`);
+      log(`Scan complete — ${scored.length} NFTs scored`);
       setPhase("done");
     } catch (e) {
       setErr(e.message);
@@ -113,7 +128,6 @@ export default function App() {
           <div style={{ marginTop: 12, fontSize: 9, color: "#222", letterSpacing: 4 }}>UPLOAD IMAGE · AI SCORES SIMILARITY · TOP 10 SHOWN</div>
         </div>
 
-        {/* Drop zone */}
         <div onDrop={onDrop} onDragOver={e => e.preventDefault()} onClick={() => !img && fileRef.current.click()}
           style={{ border: `2px dashed ${img ? "#1a5a2a" : "#161616"}`, borderRadius: 12, padding: img ? 16 : 48, textAlign: "center", cursor: img ? "default" : "pointer", marginBottom: 20, display: "flex", alignItems: "center", gap: 18, background: img ? "#080e09" : "#090909", transition: "all 0.2s" }}>
           <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => load(e.target.files[0])} />
@@ -121,7 +135,7 @@ export default function App() {
             <img src={img} alt="" style={{ width: 88, height: 88, objectFit: "cover", borderRadius: 10, border: "2px solid #1a5a2a", flexShrink: 0 }} />
             <div style={{ textAlign: "left", flex: 1 }}>
               <div style={{ color: "#5d5", fontSize: 11, fontWeight: 900, letterSpacing: 3 }}>✓ REFERENCE IMAGE SET</div>
-              <div style={{ color: "#2a2a2a", fontSize: 10, marginTop: 6 }}>Claude will score each Normie against this</div>
+              <div style={{ color: "#2a2a2a", fontSize: 10, marginTop: 6 }}>{b64 ? "Ready to scan" : "Processing image..."}</div>
             </div>
             <button onClick={e => { e.stopPropagation(); fileRef.current.click(); }}
               style={{ background: "#0a0a0a", color: "#3a3a3a", border: "1px solid #151515", borderRadius: 5, padding: "7px 14px", cursor: "pointer", fontSize: 9, fontFamily: "inherit", letterSpacing: 2 }}>
@@ -136,7 +150,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Slider */}
         <div style={{ background: "#0c0c0c", border: "1px solid #141414", borderRadius: 10, padding: "18px 20px", marginBottom: 20 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <div>
@@ -156,27 +169,26 @@ export default function App() {
           </div>
         </div>
 
-        {/* Button */}
-        <button onClick={run} disabled={scanning} style={{
-          width: "100%", padding: "17px 0", background: scanning ? "#090909" : "#06182a",
-          color: scanning ? "#1e1e1e" : "#5af",
-          border: `1px solid ${scanning ? "#0f0f0f" : "#0d2a46"}`,
+        <button onClick={run} disabled={scanning || !b64} style={{
+          width: "100%", padding: "17px 0",
+          background: scanning ? "#090909" : !b64 ? "#090909" : "#06182a",
+          color: scanning || !b64 ? "#1e1e1e" : "#5af",
+          border: `1px solid ${scanning || !b64 ? "#0f0f0f" : "#0d2a46"}`,
           borderRadius: 9, fontSize: 11, letterSpacing: 6, fontWeight: 900,
-          cursor: scanning ? "not-allowed" : "pointer", fontFamily: "inherit", marginBottom: 20, transition: "all 0.25s"
+          cursor: scanning || !b64 ? "not-allowed" : "pointer", fontFamily: "inherit", marginBottom: 20, transition: "all 0.25s"
         }}>
           {scanning
             ? phase === "fetching" ? "⟳  LOADING NORMIES..." : `⟳  SCORING  ${prog.n} / ${prog.total}`
+            : !b64 && img ? "PROCESSING IMAGE..."
             : "[ FIND SIMILAR NORMIES ]"}
         </button>
 
-        {/* Progress bar */}
         {scanning && phase === "analyzing" && (
           <div style={{ background: "#0c0c0c", borderRadius: 4, height: 3, marginBottom: 12, overflow: "hidden" }}>
             <div style={{ background: "linear-gradient(90deg,#0a3a6a,#5af)", height: "100%", width: `${prog.total ? (prog.n / prog.total) * 100 : 0}%`, transition: "width 0.4s" }} />
           </div>
         )}
 
-        {/* Debug log */}
         {debugLog.length > 0 && (
           <div style={{ marginBottom: 16, padding: "10px 14px", background: "#090d0f", border: "1px solid #0d1e28", borderRadius: 7 }}>
             {debugLog.map((line, i) => (
@@ -191,7 +203,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Results grid */}
         {showGrid && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -206,33 +217,25 @@ export default function App() {
                 const nft = vis[i];
                 const isLoading = !nft && phase === "analyzing";
                 const isEmpty = !nft && phase === "done";
-
                 if (nft) {
                   const link = nft.opensea_url || `https://opensea.io/assets/ethereum/${nft.contract}/${nft.identifier}`;
                   return (
                     <a key={nft.identifier} href={link} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none", color: "inherit" }}>
-                      <div
-                        style={{ background: "#0b0b0b", border: "1px solid #1a1a1a", borderRadius: 9, overflow: "hidden", cursor: "pointer", transition: "transform 0.15s, box-shadow 0.15s", position: "relative" }}
+                      <div style={{ background: "#0b0b0b", border: "1px solid #1a1a1a", borderRadius: 9, overflow: "hidden", cursor: "pointer", transition: "transform 0.15s, box-shadow 0.15s", position: "relative" }}
                         onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "0 8px 24px #0a0a1a"; }}
-                        onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; }}
-                      >
+                        onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; }}>
                         <div style={{ position: "absolute", top: 6, left: 6, background: "rgba(0,0,0,0.8)", borderRadius: 4, padding: "2px 6px", fontSize: 9, color: "#444", zIndex: 1 }}>#{i + 1}</div>
                         <img src={nft.url} alt="" style={{ width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" }}
                           onError={e => { e.target.style.minHeight = "100px"; e.target.style.background = "#111"; }} />
-                        <div style={{ position: "absolute", top: 6, right: 6, background: scoreBg(nft.score), borderRadius: 4, padding: "2px 7px", fontSize: 11, fontWeight: 900, color: "#fff", zIndex: 1 }}>
-                          {nft.score}%
-                        </div>
+                        <div style={{ position: "absolute", top: 6, right: 6, background: scoreBg(nft.score), borderRadius: 4, padding: "2px 7px", fontSize: 11, fontWeight: 900, color: "#fff", zIndex: 1 }}>{nft.score}%</div>
                         <div style={{ padding: "7px 9px 9px" }}>
-                          <div style={{ fontSize: 10, color: "#888", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {nft.name || `Normie #${nft.identifier}`}
-                          </div>
+                          <div style={{ fontSize: 10, color: "#888", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nft.name || `Normie #${nft.identifier}`}</div>
                           <div style={{ fontSize: 8, color: "#2a2a2a", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nft.reason}</div>
                         </div>
                       </div>
                     </a>
                   );
                 }
-
                 return (
                   <div key={`slot-${i}`} style={{ borderRadius: 9, overflow: "hidden", border: "1px solid #111", background: "#0b0b0b" }}>
                     <div style={{ width: "100%", aspectRatio: "1", background: "#0d0d0d", position: "relative", overflow: "hidden" }}>
@@ -251,21 +254,13 @@ export default function App() {
             {phase === "done" && vis.length === 0 && results.length > 0 && (
               <div style={{ textAlign: "center", marginTop: 20, color: "#2a2a2a" }}>
                 <div style={{ fontSize: 11, letterSpacing: 2 }}>NO RESULTS ABOVE {thresh}%</div>
-                <div style={{ fontSize: 10, marginTop: 6, color: "#1a1a1a" }}>
-                  Best match scored {results[0]?.score ?? 0}% — try lowering the slider to 0%
-                </div>
+                <div style={{ fontSize: 10, marginTop: 6, color: "#1a1a1a" }}>Best match: {results[0]?.score ?? 0}% — lower the slider</div>
               </div>
             )}
           </div>
         )}
       </div>
-
-      <style>{`
-        @keyframes shimmer {
-          0% { background-position: 200% 0; }
-          100% { background-position: -200% 0; }
-        }
-      `}</style>
+      <style>{`@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
     </div>
   );
 }
