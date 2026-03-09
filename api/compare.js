@@ -13,8 +13,31 @@ export default async function handler(req, res) {
   if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
   if (!nftUrl) return res.status(400).json({ error: 'Missing nftUrl' });
 
-  // Strip any data URL prefix if it accidentally got included
+  // Strip any accidental data URL prefix
   const cleanBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+
+  // Fetch the NFT image server-side and convert to base64
+  // This avoids Anthropic trying to fetch the URL directly (which can fail for WebP/CDN-restricted URLs)
+  let nftBase64;
+  let nftMediaType = 'image/jpeg';
+  try {
+    const nftRes = await fetch(nftUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    if (!nftRes.ok) throw new Error(`NFT image fetch failed: ${nftRes.status}`);
+    
+    const contentType = nftRes.headers.get('content-type') || 'image/jpeg';
+    // Map to Anthropic-supported types
+    if (contentType.includes('png')) nftMediaType = 'image/png';
+    else if (contentType.includes('webp')) nftMediaType = 'image/webp';
+    else if (contentType.includes('gif')) nftMediaType = 'image/gif';
+    else nftMediaType = 'image/jpeg';
+
+    const arrayBuffer = await nftRes.arrayBuffer();
+    nftBase64 = Buffer.from(arrayBuffer).toString('base64');
+  } catch (e) {
+    return res.status(500).json({ error: `Failed to fetch NFT image: ${e.message}` });
+  }
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -27,26 +50,19 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 120,
-        system: 'Visual similarity scorer. Return ONLY valid JSON: {"score":<integer 0-100>,"reason":"<max 6 words>"}. Same-collection NFTs sharing art style score 40-60+. No extra text whatsoever.',
+        system: 'Visual similarity scorer. Return ONLY valid JSON: {"score":<integer 0-100>,"reason":"<max 6 words>"}. Same-collection NFTs sharing art style score 40-60+. No extra text.',
         messages: [{
           role: 'user',
           content: [
             { type: 'text', text: 'Reference image:' },
             {
               type: 'image',
-              source: {
-                type: 'base64',
-                media_type: 'image/jpeg',
-                data: cleanBase64,
-              }
+              source: { type: 'base64', media_type: 'image/jpeg', data: cleanBase64 }
             },
-            { type: 'text', text: 'NFT image to compare:' },
+            { type: 'text', text: 'NFT to compare:' },
             {
               type: 'image',
-              source: {
-                type: 'url',
-                url: nftUrl,
-              }
+              source: { type: 'base64', media_type: nftMediaType, data: nftBase64 }
             },
             { type: 'text', text: 'JSON only:' },
           ],
@@ -58,7 +74,7 @@ export default async function handler(req, res) {
     if (!response.ok) {
       return res.status(response.status).json({
         error: `Anthropic API error ${response.status}`,
-        detail: raw.slice(0, 300),
+        detail: raw.slice(0, 400),
       });
     }
 
