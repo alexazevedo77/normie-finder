@@ -1,10 +1,10 @@
 export default async function handler(req, res) {
-  // Only allow GET
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { limit = 20 } = req.query;
+  if (!process.env.OPENSEA_API_KEY) return res.status(500).json({ error: 'OPENSEA_API_KEY env var not set' });
+
+  const { limit = 30 } = req.query;
 
   try {
     const response = await fetch(
@@ -17,12 +17,13 @@ export default async function handler(req, res) {
       }
     );
 
+    const raw = await response.text();
+
     if (!response.ok) {
-      const text = await response.text();
-      return res.status(response.status).json({ error: `OpenSea error: ${text}` });
+      return res.status(response.status).json({ error: `OpenSea error ${response.status}`, detail: raw });
     }
 
-    const data = await response.json();
+    const data = JSON.parse(raw);
     return res.status(200).json(data);
   } catch (err) {
     return res.status(500).json({ error: err.message });

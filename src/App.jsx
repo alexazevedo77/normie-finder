@@ -9,12 +9,18 @@ export default function App() {
   const [prog, setProg] = useState({ n: 0, total: 0 });
   const [phase, setPhase] = useState("idle");
   const [err, setErr] = useState(null);
+  const [debugLog, setDebugLog] = useState([]);
   const fileRef = useRef();
+
+  const log = (msg) => {
+    console.log(msg);
+    setDebugLog(prev => [...prev.slice(-6), msg]);
+  };
 
   const load = (file) => {
     if (!file?.type.startsWith("image/")) return;
     setImg(URL.createObjectURL(file));
-    setResults([]); setErr(null); setPhase("idle");
+    setResults([]); setErr(null); setPhase("idle"); setDebugLog([]);
     const r = new FileReader();
     r.onload = (e) => setB64(e.target.result.split(",")[1]);
     r.readAsDataURL(file);
@@ -22,28 +28,35 @@ export default function App() {
 
   const onDrop = useCallback((e) => { e.preventDefault(); load(e.dataTransfer.files[0]); }, []);
 
-  // All API calls go through Vercel serverless functions — no CORS issues, keys stay secret
   const compare = async (nftUrl) => {
     const res = await fetch("/api/compare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ imageBase64: b64, nftUrl }),
     });
-    if (!res.ok) throw new Error(`Compare failed: ${res.status}`);
-    return await res.json();
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error + (data.detail ? `: ${data.detail}` : ""));
+    return data;
   };
 
   const run = async () => {
     if (!b64) return setErr("Upload an image first.");
-    setErr(null); setScanning(true); setResults([]); setPhase("fetching");
+    setErr(null); setDebugLog([]); setScanning(true); setResults([]); setPhase("fetching");
     try {
+      log("Fetching NFTs from /api/nfts...");
       const res = await fetch("/api/nfts?limit=30");
-      if (!res.ok) throw new Error(`Failed to fetch NFTs (${res.status})`);
-      const { nfts = [] } = await res.json();
+      const nftData = await res.json();
+      if (!res.ok) throw new Error(nftData.error + (nftData.detail ? `: ${nftData.detail}` : ""));
+
+      const { nfts = [] } = nftData;
       const valid = nfts.filter(n => n.display_image_url || n.image_url);
-      if (valid.length === 0) throw new Error("No NFTs returned from collection.");
+      log(`Got ${valid.length} NFTs with images`);
+
+      if (valid.length === 0) throw new Error("No NFTs returned. Check OPENSEA_API_KEY in Vercel.");
+
       setProg({ n: 0, total: valid.length });
       setPhase("analyzing");
+
       const scored = [];
       for (let i = 0; i < valid.length; i++) {
         const nft = valid[i];
@@ -52,14 +65,21 @@ export default function App() {
           const { score, reason } = await compare(url);
           scored.push({ ...nft, score: Math.max(0, Math.min(100, Number(score) || 0)), reason, url });
           setResults([...scored].sort((a, b) => b.score - a.score));
+          if (i === 0) log(`First score: ${score}% — API working ✓`);
         } catch (e) {
-          console.error("Compare failed for", nft.identifier, e);
+          log(`⚠ NFT ${i + 1} failed: ${e.message}`);
+          if (i === 0) throw new Error(`Compare API failed: ${e.message}`);
         }
         setProg({ n: i + 1, total: valid.length });
       }
+      log(`Done! ${scored.length} NFTs scored.`);
       setPhase("done");
-    } catch (e) { setErr(e.message); setPhase("idle"); }
-    finally { setScanning(false); }
+    } catch (e) {
+      setErr(e.message);
+      setPhase("idle");
+    } finally {
+      setScanning(false);
+    }
   };
 
   const top10 = results.slice(0, 10);
@@ -72,7 +92,6 @@ export default function App() {
     <div style={{ fontFamily: "'Courier New',monospace", background: "#080808", minHeight: "100vh", color: "#ccc", padding: "28px 20px" }}>
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
 
-        {/* Header */}
         <div style={{ textAlign: "center", marginBottom: 36 }}>
           <div style={{ fontSize: 9, letterSpacing: 7, color: "#1a3a5a", marginBottom: 10 }}>⬡ OPENSEA · NORMIES COLLECTION ⬡</div>
           <div style={{ fontSize: 36, fontWeight: 900, letterSpacing: 7, color: "#ddeeff" }}>NORMIE</div>
@@ -138,13 +157,22 @@ export default function App() {
 
         {/* Progress bar */}
         {scanning && phase === "analyzing" && (
-          <div style={{ background: "#0c0c0c", borderRadius: 4, height: 3, marginBottom: 20, overflow: "hidden" }}>
+          <div style={{ background: "#0c0c0c", borderRadius: 4, height: 3, marginBottom: 12, overflow: "hidden" }}>
             <div style={{ background: "linear-gradient(90deg,#0a3a6a,#5af)", height: "100%", width: `${prog.total ? (prog.n / prog.total) * 100 : 0}%`, transition: "width 0.4s" }} />
           </div>
         )}
 
+        {/* Debug log */}
+        {debugLog.length > 0 && (
+          <div style={{ marginBottom: 16, padding: "10px 14px", background: "#090d0f", border: "1px solid #0d1e28", borderRadius: 7 }}>
+            {debugLog.map((line, i) => (
+              <div key={i} style={{ fontSize: 10, color: line.startsWith("⚠") ? "#f65" : "#2a5a7a", letterSpacing: 0.5, lineHeight: 1.8 }}>{line}</div>
+            ))}
+          </div>
+        )}
+
         {err && (
-          <div style={{ color: "#f65", fontSize: 11, padding: "12px 16px", background: "#0f0707", borderRadius: 7, border: "1px solid #1e0a0a", marginBottom: 20 }}>
+          <div style={{ color: "#f65", fontSize: 11, padding: "12px 16px", background: "#0f0707", borderRadius: 7, border: "1px solid #1e0a0a", marginBottom: 20, lineHeight: 1.6 }}>
             ⚠ {err}
           </div>
         )}
@@ -154,9 +182,7 @@ export default function App() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
               <div style={{ fontSize: 9, letterSpacing: 3, color: "#2a2a2a" }}>
-                {phase === "done"
-                  ? `TOP 10 RESULTS · ${vis.length} MATCH ≥${thresh}%`
-                  : `SCANNING · ${results.length} SCORED SO FAR`}
+                {phase === "done" ? `TOP 10 · ${vis.length} MATCH ≥${thresh}%` : `SCANNING · ${results.length} SCORED`}
               </div>
               {phase === "done" && <div style={{ fontSize: 9, letterSpacing: 2, color: "#1a4a1a" }}>✓ COMPLETE</div>}
             </div>
@@ -196,12 +222,8 @@ export default function App() {
                 return (
                   <div key={`slot-${i}`} style={{ borderRadius: 9, overflow: "hidden", border: "1px solid #111", background: "#0b0b0b" }}>
                     <div style={{ width: "100%", aspectRatio: "1", background: "#0d0d0d", position: "relative", overflow: "hidden" }}>
-                      {isLoading && (
-                        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg, #0d0d0d 25%, #161616 50%, #0d0d0d 75%)", backgroundSize: "200% 100%", animation: "shimmer 1.4s infinite" }} />
-                      )}
-                      {isEmpty && (
-                        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#1a1a1a", fontSize: 18 }}>—</div>
-                      )}
+                      {isLoading && <div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg, #0d0d0d 25%, #161616 50%, #0d0d0d 75%)", backgroundSize: "200% 100%", animation: "shimmer 1.4s infinite" }} />}
+                      {isEmpty && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#1a1a1a", fontSize: 18 }}>—</div>}
                     </div>
                     <div style={{ padding: "7px 9px 9px" }}>
                       <div style={{ height: 10, borderRadius: 3, background: isLoading ? "#141414" : "#0e0e0e", marginBottom: 5, width: "70%" }} />
@@ -212,11 +234,11 @@ export default function App() {
               })}
             </div>
 
-            {phase === "done" && vis.length === 0 && (
+            {phase === "done" && vis.length === 0 && results.length > 0 && (
               <div style={{ textAlign: "center", marginTop: 20, color: "#2a2a2a" }}>
                 <div style={{ fontSize: 11, letterSpacing: 2 }}>NO RESULTS ABOVE {thresh}%</div>
                 <div style={{ fontSize: 10, marginTop: 6, color: "#1a1a1a" }}>
-                  Best match: {results[0]?.score ?? 0}% — try lowering the slider
+                  Best match scored {results[0]?.score ?? 0}% — try lowering the slider to 0%
                 </div>
               </div>
             )}
