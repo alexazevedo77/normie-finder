@@ -6,19 +6,31 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).json({ error: 'ANTHROPIC_API_KEY env var not set on Vercel' });
-  }
+  if (!process.env.ANTHROPIC_API_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
 
   const { imageBase64, nftUrl } = req.body;
   if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
   if (!nftUrl) return res.status(400).json({ error: 'Missing nftUrl' });
 
-  // Strip any accidental data URL prefix
   const cleanBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
 
-  // Fetch the NFT image and convert to JPEG using sharp
+  // Convert user image through sharp to ensure clean JPEG
+  let cleanUserBase64 = cleanBase64;
+  try {
+    const userBuffer = Buffer.from(cleanBase64, 'base64');
+    const jpegBuffer = await sharp(userBuffer)
+      .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
+      .flatten({ background: { r: 255, g: 255, b: 255 } })
+      .greyscale()
+      .threshold(128)  // 1-bit threshold
+      .jpeg({ quality: 90 })
+      .toBuffer();
+    cleanUserBase64 = jpegBuffer.toString('base64');
+  } catch (e) {
+    console.error('User image conversion failed:', e.message);
+  }
+
+  // Fetch NFT image and convert to 1-bit B&W JPEG
   let nftBase64;
   try {
     const nftRes = await fetch(nftUrl, {
@@ -27,28 +39,16 @@ module.exports = async function handler(req, res) {
     if (!nftRes.ok) throw new Error(`HTTP ${nftRes.status}`);
     const arrayBuffer = await nftRes.arrayBuffer();
     const inputBuffer = Buffer.from(arrayBuffer);
-    // Convert to JPEG regardless of input format (handles WebP, PNG, GIF, etc.)
     const jpegBuffer = await sharp(inputBuffer)
       .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 85 })
+      .flatten({ background: { r: 255, g: 255, b: 255 } })
+      .greyscale()
+      .threshold(128)  // 1-bit threshold
+      .jpeg({ quality: 90 })
       .toBuffer();
     nftBase64 = jpegBuffer.toString('base64');
   } catch (e) {
     return res.status(500).json({ error: `Failed to process NFT image: ${e.message}` });
-  }
-
-  // Also convert the uploaded image buffer through sharp to ensure it's valid JPEG
-  let cleanUserBase64 = cleanBase64;
-  try {
-    const userBuffer = Buffer.from(cleanBase64, 'base64');
-    const jpegBuffer = await sharp(userBuffer)
-      .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 85 })
-      .toBuffer();
-    cleanUserBase64 = jpegBuffer.toString('base64');
-  } catch (e) {
-    // If sharp fails on user image, use as-is
-    console.error('User image sharp conversion failed:', e.message);
   }
 
   try {
@@ -62,13 +62,13 @@ module.exports = async function handler(req, res) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 120,
-        system: 'Visual similarity scorer. Return ONLY valid JSON: {"score":<integer 0-100>,"reason":"<max 6 words>"}. Same-collection NFTs sharing art style score 40-60+. No extra text.',
+        system: 'Visual similarity scorer for 1-bit black and white silhouette images. Compare shape, composition, and structure only (no color). Return ONLY valid JSON: {"score":<integer 0-100>,"reason":"<max 6 words>"}. Similar shapes and poses score 50+. No extra text.',
         messages: [{
           role: 'user',
           content: [
-            { type: 'text', text: 'Reference image:' },
+            { type: 'text', text: 'Reference silhouette:' },
             { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: cleanUserBase64 } },
-            { type: 'text', text: 'NFT to compare:' },
+            { type: 'text', text: 'NFT silhouette to compare:' },
             { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: nftBase64 } },
             { type: 'text', text: 'JSON only:' },
           ],
@@ -78,12 +78,8 @@ module.exports = async function handler(req, res) {
 
     const raw = await response.text();
     if (!response.ok) {
-      return res.status(response.status).json({
-        error: `Anthropic API error ${response.status}`,
-        detail: raw.slice(0, 400),
-      });
+      return res.status(response.status).json({ error: `Anthropic API error ${response.status}`, detail: raw.slice(0, 400) });
     }
-
     const data = JSON.parse(raw);
     const txt = data.content?.[0]?.text || '{"score":0,"reason":"no response"}';
     const match = txt.match(/\{[\s\S]*?\}/);
