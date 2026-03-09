@@ -22,27 +22,15 @@ export default function App() {
 
   const onDrop = useCallback((e) => { e.preventDefault(); load(e.dataTransfer.files[0]); }, []);
 
+  // All API calls go through Vercel serverless functions — no CORS issues, keys stay secret
   const compare = async (nftUrl) => {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetch("/api/compare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 120,
-        system: 'You are a visual similarity scorer for NFT images. Compare two images and return ONLY valid JSON: {"score":<integer 0-100>,"reason":"<max 6 words>"}. Same-collection NFTs sharing style should score 40-60+. Score higher for shared traits, colors, features.',
-        messages: [{ role: "user", content: [
-          { type: "text", text: "Reference image:" },
-          { type: "image", source: { type: "base64", media_type: "image/png", data: b64 } },
-          { type: "text", text: "NFT to score:" },
-          { type: "image", source: { type: "url", url: nftUrl } },
-          { type: "text", text: 'JSON only: {"score":72,"reason":"same hat and colors"}' }
-        ]}]
-      })
+      body: JSON.stringify({ imageBase64: b64, nftUrl }),
     });
-    const d = await res.json();
-    const txt = d.content?.[0]?.text || '{"score":0,"reason":"error"}';
-    const match = txt.match(/\{[^}]+\}/);
-    return JSON.parse(match ? match[0] : '{"score":0,"reason":"parse error"}');
+    if (!res.ok) throw new Error(`Compare failed: ${res.status}`);
+    return await res.json();
   };
 
   const run = async () => {
@@ -64,7 +52,9 @@ export default function App() {
           const { score, reason } = await compare(url);
           scored.push({ ...nft, score: Math.max(0, Math.min(100, Number(score) || 0)), reason, url });
           setResults([...scored].sort((a, b) => b.score - a.score));
-        } catch {}
+        } catch (e) {
+          console.error("Compare failed for", nft.identifier, e);
+        }
         setProg({ n: i + 1, total: valid.length });
       }
       setPhase("done");
@@ -142,9 +132,7 @@ export default function App() {
           cursor: scanning ? "not-allowed" : "pointer", fontFamily: "inherit", marginBottom: 20, transition: "all 0.25s"
         }}>
           {scanning
-            ? phase === "fetching"
-              ? "⟳  LOADING NORMIES..."
-              : `⟳  SCORING  ${prog.n} / ${prog.total}`
+            ? phase === "fetching" ? "⟳  LOADING NORMIES..." : `⟳  SCORING  ${prog.n} / ${prog.total}`
             : "[ FIND SIMILAR NORMIES ]"}
         </button>
 
@@ -161,7 +149,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Results grid — appears as soon as scanning starts */}
+        {/* Results grid */}
         {showGrid && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -170,9 +158,7 @@ export default function App() {
                   ? `TOP 10 RESULTS · ${vis.length} MATCH ≥${thresh}%`
                   : `SCANNING · ${results.length} SCORED SO FAR`}
               </div>
-              {phase === "done" && (
-                <div style={{ fontSize: 9, letterSpacing: 2, color: "#1a4a1a" }}>✓ COMPLETE</div>
-              )}
+              {phase === "done" && <div style={{ fontSize: 9, letterSpacing: 2, color: "#1a4a1a" }}>✓ COMPLETE</div>}
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
@@ -182,7 +168,6 @@ export default function App() {
                 const isEmpty = !nft && phase === "done";
 
                 if (nft) {
-                  // Filled card
                   const link = nft.opensea_url || `https://opensea.io/assets/ethereum/${nft.contract}/${nft.identifier}`;
                   return (
                     <a key={nft.identifier} href={link} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none", color: "inherit" }}>
@@ -208,28 +193,16 @@ export default function App() {
                   );
                 }
 
-                // Skeleton / empty slot
                 return (
                   <div key={`slot-${i}`} style={{ borderRadius: 9, overflow: "hidden", border: "1px solid #111", background: "#0b0b0b" }}>
-                    {/* Image area skeleton */}
-                    <div style={{
-                      width: "100%", aspectRatio: "1",
-                      background: isLoading ? undefined : "#0d0d0d",
-                      position: "relative", overflow: "hidden"
-                    }}>
+                    <div style={{ width: "100%", aspectRatio: "1", background: "#0d0d0d", position: "relative", overflow: "hidden" }}>
                       {isLoading && (
-                        <div style={{
-                          position: "absolute", inset: 0,
-                          background: "linear-gradient(90deg, #0d0d0d 25%, #151515 50%, #0d0d0d 75%)",
-                          backgroundSize: "200% 100%",
-                          animation: "shimmer 1.4s infinite"
-                        }} />
+                        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg, #0d0d0d 25%, #161616 50%, #0d0d0d 75%)", backgroundSize: "200% 100%", animation: "shimmer 1.4s infinite" }} />
                       )}
                       {isEmpty && (
                         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#1a1a1a", fontSize: 18 }}>—</div>
                       )}
                     </div>
-                    {/* Text area skeleton */}
                     <div style={{ padding: "7px 9px 9px" }}>
                       <div style={{ height: 10, borderRadius: 3, background: isLoading ? "#141414" : "#0e0e0e", marginBottom: 5, width: "70%" }} />
                       <div style={{ height: 8, borderRadius: 3, background: isLoading ? "#111" : "#0c0c0c", width: "50%" }} />
@@ -239,7 +212,6 @@ export default function App() {
               })}
             </div>
 
-            {/* No results message */}
             {phase === "done" && vis.length === 0 && (
               <div style={{ textAlign: "center", marginTop: 20, color: "#2a2a2a" }}>
                 <div style={{ fontSize: 11, letterSpacing: 2 }}>NO RESULTS ABOVE {thresh}%</div>
