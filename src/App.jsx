@@ -3,6 +3,7 @@ import { useState, useCallback, useRef } from "react";
 export default function App() {
   const [img, setImg] = useState(null);
   const [b64, setB64] = useState(null);
+  const [mediaType, setMediaType] = useState("image/jpeg");
   const [thresh, setThresh] = useState(50);
   const [results, setResults] = useState([]);
   const [scanning, setScanning] = useState(false);
@@ -21,9 +22,23 @@ export default function App() {
     if (!file?.type.startsWith("image/")) return;
     setImg(URL.createObjectURL(file));
     setResults([]); setErr(null); setPhase("idle"); setDebugLog([]);
-    const r = new FileReader();
-    r.onload = (e) => setB64(e.target.result.split(",")[1]);
-    r.readAsDataURL(file);
+
+    // Convert any image format to JPEG via canvas to ensure compatibility
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(image, 0, 0);
+      // Always export as JPEG — Anthropic supports: jpeg, png, gif, webp
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+      setB64(dataUrl.split(",")[1]);
+      setMediaType("image/jpeg");
+      URL.revokeObjectURL(url);
+    };
+    image.src = url;
   };
 
   const onDrop = useCallback((e) => { e.preventDefault(); load(e.dataTransfer.files[0]); }, []);
@@ -32,7 +47,7 @@ export default function App() {
     const res = await fetch("/api/compare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageBase64: b64, nftUrl }),
+      body: JSON.stringify({ imageBase64: b64, mediaType, nftUrl }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error + (data.detail ? `: ${data.detail}` : ""));
@@ -51,7 +66,6 @@ export default function App() {
       const { nfts = [] } = nftData;
       const valid = nfts.filter(n => n.display_image_url || n.image_url);
       log(`Got ${valid.length} NFTs with images`);
-
       if (valid.length === 0) throw new Error("No NFTs returned. Check OPENSEA_API_KEY in Vercel.");
 
       setProg({ n: 0, total: valid.length });
@@ -67,7 +81,7 @@ export default function App() {
           setResults([...scored].sort((a, b) => b.score - a.score));
           if (i === 0) log(`First score: ${score}% — API working ✓`);
         } catch (e) {
-          log(`⚠ NFT ${i + 1} failed: ${e.message}`);
+          log(`⚠ NFT ${i + 1} failed: ${e.message.slice(0, 80)}`);
           if (i === 0) throw new Error(`Compare API failed: ${e.message}`);
         }
         setProg({ n: i + 1, total: valid.length });
@@ -117,7 +131,7 @@ export default function App() {
             <div style={{ width: "100%" }}>
               <div style={{ fontSize: 44, opacity: 0.1, marginBottom: 14 }}>⊕</div>
               <div style={{ color: "#3a3a3a", fontSize: 11, letterSpacing: 3 }}>DROP IMAGE OR CLICK TO UPLOAD</div>
-              <div style={{ color: "#1e1e1e", fontSize: 10, marginTop: 8 }}>Any image to find similar Normies</div>
+              <div style={{ color: "#1e1e1e", fontSize: 10, marginTop: 8 }}>Any image format accepted</div>
             </div>
           )}
         </div>
