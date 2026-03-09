@@ -1,11 +1,8 @@
 import { useState, useCallback, useRef } from "react";
 
-const SLUG = "normies";
-
 export default function App() {
   const [img, setImg] = useState(null);
   const [b64, setB64] = useState(null);
-  const [osKey, setOsKey] = useState("");
   const [thresh, setThresh] = useState(50);
   const [results, setResults] = useState([]);
   const [scanning, setScanning] = useState(false);
@@ -48,13 +45,11 @@ export default function App() {
 
   const run = async () => {
     if (!b64) return setErr("Upload an image first.");
-    if (!osKey) return setErr("Enter your OpenSea API key.");
     setErr(null); setScanning(true); setResults([]); setPhase("fetching");
     try {
-      const res = await fetch(`https://api.opensea.io/api/v2/collection/${SLUG}/nfts?limit=20`, {
-        headers: { "x-api-key": osKey, accept: "application/json" }
-      });
-      if (!res.ok) throw new Error(`OpenSea ${res.status} — check API key`);
+      // Call our serverless function — OpenSea key stays on the server
+      const res = await fetch("/api/nfts?limit=20");
+      if (!res.ok) throw new Error(`Failed to fetch NFTs (${res.status})`);
       const { nfts = [] } = await res.json();
       const valid = nfts.filter(n => n.display_image_url || n.image_url);
       setProg({ n: 0, total: valid.length });
@@ -104,15 +99,6 @@ export default function App() {
               <div style={{ color: "#1e1e1e", fontSize: 10, marginTop: 8 }}>Any image to find similar Normies</div>
             </div>
           )}
-        </div>
-
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <label style={{ fontSize: 9, letterSpacing: 3, color: "#333" }}>OPENSEA API KEY</label>
-            <a href="https://docs.opensea.io/reference/api-overview" target="_blank" rel="noopener noreferrer" style={{ fontSize: 9, color: "#1a3a5a", textDecoration: "none" }}>GET FREE KEY ↗</a>
-          </div>
-          <input type="password" placeholder="Paste your OpenSea API key..." value={osKey} onChange={e => setOsKey(e.target.value)}
-            style={{ width: "100%", background: "#0b0b0b", border: "1px solid #161616", borderRadius: 7, padding: "12px 16px", color: "#bbb", fontSize: 12, boxSizing: "border-box", outline: "none", fontFamily: "inherit" }} />
         </div>
 
         <div style={{ background: "#0c0c0c", border: "1px solid #141414", borderRadius: 10, padding: "18px 20px", marginBottom: 20 }}>
