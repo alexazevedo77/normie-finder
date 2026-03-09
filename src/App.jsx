@@ -29,19 +29,18 @@ export default function App() {
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 120,
-        system: 'You are a visual similarity scorer for NFT images. Compare two images and return ONLY valid JSON with no extra text: {"score":<integer 0-100>,"reason":"<max 6 words>"}. Be generous with scoring — two NFTs from the same collection should score at least 40-60 if they share style. Score higher if they share traits, colors, or character features.',
+        system: 'You are a visual similarity scorer for NFT images. Compare two images and return ONLY valid JSON: {"score":<integer 0-100>,"reason":"<max 6 words>"}. Same-collection NFTs sharing style should score 40-60+. Score higher for shared traits, colors, features.',
         messages: [{ role: "user", content: [
-          { type: "text", text: "Reference image to match:" },
+          { type: "text", text: "Reference image:" },
           { type: "image", source: { type: "base64", media_type: "image/png", data: b64 } },
           { type: "text", text: "NFT to score:" },
           { type: "image", source: { type: "url", url: nftUrl } },
-          { type: "text", text: 'Return JSON only, e.g. {"score":72,"reason":"same blue hat and style"}' }
+          { type: "text", text: 'JSON only: {"score":72,"reason":"same hat and colors"}' }
         ]}]
       })
     });
     const d = await res.json();
     const txt = d.content?.[0]?.text || '{"score":0,"reason":"error"}';
-    // Extract JSON even if there's extra text around it
     const match = txt.match(/\{[^}]+\}/);
     return JSON.parse(match ? match[0] : '{"score":0,"reason":"parse error"}');
   };
@@ -64,11 +63,8 @@ export default function App() {
         try {
           const { score, reason } = await compare(url);
           scored.push({ ...nft, score: Math.max(0, Math.min(100, Number(score) || 0)), reason, url });
-          // Always keep sorted, show running results
           setResults([...scored].sort((a, b) => b.score - a.score));
-        } catch (e) {
-          console.error("Compare failed for", nft.identifier, e);
-        }
+        } catch {}
         setProg({ n: i + 1, total: valid.length });
       }
       setPhase("done");
@@ -76,14 +72,11 @@ export default function App() {
     finally { setScanning(false); }
   };
 
-  // Always show top 10, but only those meeting the threshold minimum
-  // If fewer than 10 meet threshold, show however many do
   const top10 = results.slice(0, 10);
   const vis = top10.filter(r => r.score >= thresh);
-  const hasResults = results.length > 0;
-
-  const scoreColor = (s) => s >= 75 ? "#5d5" : s >= 50 ? "#db5" : s >= 25 ? "#f94" : "#888";
-  const scoreBg = (s) => s >= 75 ? "rgba(0,130,0,0.92)" : s >= 50 ? "rgba(150,130,0,0.92)" : s >= 25 ? "rgba(180,80,0,0.92)" : "rgba(30,30,30,0.92)";
+  const showGrid = phase === "analyzing" || phase === "done";
+  const scoreBg = (s) => s >= 75 ? "rgba(0,130,0,0.92)" : s >= 50 ? "rgba(150,130,0,0.92)" : s >= 25 ? "rgba(180,80,0,0.92)" : "rgba(25,25,25,0.92)";
+  const scoreColor = (s) => s >= 75 ? "#5d5" : s >= 50 ? "#db5" : "#5af";
 
   return (
     <div style={{ fontFamily: "'Courier New',monospace", background: "#080808", minHeight: "100vh", color: "#ccc", padding: "28px 20px" }}>
@@ -126,9 +119,7 @@ export default function App() {
             <div>
               <div style={{ fontSize: 9, letterSpacing: 3, color: "#333", marginBottom: 3 }}>MINIMUM SIMILARITY</div>
               <div style={{ fontSize: 10, color: "#1e1e1e" }}>
-                {hasResults
-                  ? `Showing ${vis.length} of top 10 results`
-                  : "Filter results after scanning"}
+                {phase === "done" ? `${vis.length} of top 10 match ≥${thresh}%` : "Filter results after scanning"}
               </div>
             </div>
             <div style={{ fontSize: 28, fontWeight: 900, color: scoreColor(thresh) }}>
@@ -148,7 +139,7 @@ export default function App() {
           color: scanning ? "#1e1e1e" : "#5af",
           border: `1px solid ${scanning ? "#0f0f0f" : "#0d2a46"}`,
           borderRadius: 9, fontSize: 11, letterSpacing: 6, fontWeight: 900,
-          cursor: scanning ? "not-allowed" : "pointer", fontFamily: "inherit", marginBottom: 14, transition: "all 0.25s"
+          cursor: scanning ? "not-allowed" : "pointer", fontFamily: "inherit", marginBottom: 20, transition: "all 0.25s"
         }}>
           {scanning
             ? phase === "fetching"
@@ -170,67 +161,103 @@ export default function App() {
           </div>
         )}
 
-        {/* Results */}
-        {hasResults && (
+        {/* Results grid — appears as soon as scanning starts */}
+        {showGrid && (
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
               <div style={{ fontSize: 9, letterSpacing: 3, color: "#2a2a2a" }}>
-                TOP 10 · SHOWING {vis.length} ≥{thresh}%
-                {phase === "analyzing" && <span style={{ color: "#1a3a5a" }}> · STILL SCANNING...</span>}
+                {phase === "done"
+                  ? `TOP 10 RESULTS · ${vis.length} MATCH ≥${thresh}%`
+                  : `SCANNING · ${results.length} SCORED SO FAR`}
               </div>
               {phase === "done" && (
-                <div style={{ fontSize: 9, letterSpacing: 2, color: "#1a4a1a" }}>✓ SCAN COMPLETE</div>
+                <div style={{ fontSize: 9, letterSpacing: 2, color: "#1a4a1a" }}>✓ COMPLETE</div>
               )}
             </div>
 
-            {vis.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "50px 0", color: "#222" }}>
-                <div style={{ fontSize: 28, marginBottom: 12 }}>○</div>
-                <div style={{ fontSize: 11, letterSpacing: 2 }}>NO TOP-10 RESULTS ABOVE {thresh}%</div>
-                <div style={{ fontSize: 10, marginTop: 8, color: "#181818" }}>
-                  {results.length > 0
-                    ? `Best match scored ${results[0]?.score}% — try lowering the slider`
-                    : "Lower the threshold or wait for scan to complete"}
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(148px, 1fr))", gap: 10 }}>
-                {vis.map((nft, i) => {
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
+              {Array.from({ length: 10 }, (_, i) => {
+                const nft = vis[i];
+                const isLoading = !nft && phase === "analyzing";
+                const isEmpty = !nft && phase === "done";
+
+                if (nft) {
+                  // Filled card
                   const link = nft.opensea_url || `https://opensea.io/assets/ethereum/${nft.contract}/${nft.identifier}`;
                   return (
                     <a key={nft.identifier} href={link} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none", color: "inherit" }}>
                       <div
-                        style={{ background: "#0b0b0b", border: `1px solid #161616`, borderRadius: 9, overflow: "hidden", transition: "transform 0.15s, box-shadow 0.15s", cursor: "pointer", position: "relative" }}
+                        style={{ background: "#0b0b0b", border: "1px solid #1a1a1a", borderRadius: 9, overflow: "hidden", cursor: "pointer", transition: "transform 0.15s, box-shadow 0.15s", position: "relative" }}
                         onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "0 8px 24px #0a0a1a"; }}
                         onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; }}
                       >
-                        {/* Rank badge */}
-                        <div style={{ position: "absolute", top: 7, left: 7, background: "rgba(0,0,0,0.85)", borderRadius: 4, padding: "2px 7px", fontSize: 10, fontWeight: 900, color: "#555", zIndex: 1 }}>
-                          #{i + 1}
-                        </div>
+                        <div style={{ position: "absolute", top: 6, left: 6, background: "rgba(0,0,0,0.8)", borderRadius: 4, padding: "2px 6px", fontSize: 9, color: "#444", zIndex: 1 }}>#{i + 1}</div>
                         <img src={nft.url} alt="" style={{ width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" }}
-                          onError={e => { e.target.style.minHeight = "148px"; e.target.style.background = "#111"; }} />
-                        {/* Score badge */}
-                        <div style={{ position: "absolute", top: 7, right: 7, background: scoreBg(nft.score), borderRadius: 5, padding: "3px 9px", fontSize: 12, fontWeight: 900, color: "#fff", zIndex: 1 }}>
+                          onError={e => { e.target.style.minHeight = "100px"; e.target.style.background = "#111"; }} />
+                        <div style={{ position: "absolute", top: 6, right: 6, background: scoreBg(nft.score), borderRadius: 4, padding: "2px 7px", fontSize: 11, fontWeight: 900, color: "#fff", zIndex: 1 }}>
                           {nft.score}%
                         </div>
-                        <div style={{ padding: "9px 12px 11px" }}>
-                          <div style={{ fontSize: 11, color: "#999", fontWeight: 700, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <div style={{ padding: "7px 9px 9px" }}>
+                          <div style={{ fontSize: 10, color: "#888", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {nft.name || `Normie #${nft.identifier}`}
                           </div>
-                          <div style={{ fontSize: 9, color: "#303030", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {nft.reason}
-                          </div>
+                          <div style={{ fontSize: 8, color: "#2a2a2a", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nft.reason}</div>
                         </div>
                       </div>
                     </a>
                   );
-                })}
+                }
+
+                // Skeleton / empty slot
+                return (
+                  <div key={`slot-${i}`} style={{ borderRadius: 9, overflow: "hidden", border: "1px solid #111", background: "#0b0b0b" }}>
+                    {/* Image area skeleton */}
+                    <div style={{
+                      width: "100%", aspectRatio: "1",
+                      background: isLoading ? undefined : "#0d0d0d",
+                      position: "relative", overflow: "hidden"
+                    }}>
+                      {isLoading && (
+                        <div style={{
+                          position: "absolute", inset: 0,
+                          background: "linear-gradient(90deg, #0d0d0d 25%, #151515 50%, #0d0d0d 75%)",
+                          backgroundSize: "200% 100%",
+                          animation: "shimmer 1.4s infinite"
+                        }} />
+                      )}
+                      {isEmpty && (
+                        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#1a1a1a", fontSize: 18 }}>—</div>
+                      )}
+                    </div>
+                    {/* Text area skeleton */}
+                    <div style={{ padding: "7px 9px 9px" }}>
+                      <div style={{ height: 10, borderRadius: 3, background: isLoading ? "#141414" : "#0e0e0e", marginBottom: 5, width: "70%" }} />
+                      <div style={{ height: 8, borderRadius: 3, background: isLoading ? "#111" : "#0c0c0c", width: "50%" }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* No results message */}
+            {phase === "done" && vis.length === 0 && (
+              <div style={{ textAlign: "center", marginTop: 20, color: "#2a2a2a" }}>
+                <div style={{ fontSize: 11, letterSpacing: 2 }}>NO RESULTS ABOVE {thresh}%</div>
+                <div style={{ fontSize: 10, marginTop: 6, color: "#1a1a1a" }}>
+                  Best match: {results[0]?.score ?? 0}% — try lowering the slider
+                </div>
               </div>
             )}
           </div>
         )}
       </div>
+
+      <style>{`
+        @keyframes shimmer {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+      `}</style>
     </div>
   );
 }
