@@ -1,4 +1,6 @@
-export default async function handler(req, res) {
+const sharp = require('sharp');
+
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -16,27 +18,37 @@ export default async function handler(req, res) {
   // Strip any accidental data URL prefix
   const cleanBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
 
-  // Fetch the NFT image server-side and convert to base64
-  // This avoids Anthropic trying to fetch the URL directly (which can fail for WebP/CDN-restricted URLs)
+  // Fetch the NFT image and convert to JPEG using sharp
   let nftBase64;
-  let nftMediaType = 'image/jpeg';
   try {
     const nftRes = await fetch(nftUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NormieFinder/1.0)' }
     });
-    if (!nftRes.ok) throw new Error(`NFT image fetch failed: ${nftRes.status}`);
-    
-    const contentType = nftRes.headers.get('content-type') || 'image/jpeg';
-    // Map to Anthropic-supported types
-    if (contentType.includes('png')) nftMediaType = 'image/png';
-    else if (contentType.includes('webp')) nftMediaType = 'image/webp';
-    else if (contentType.includes('gif')) nftMediaType = 'image/gif';
-    else nftMediaType = 'image/jpeg';
-
+    if (!nftRes.ok) throw new Error(`HTTP ${nftRes.status}`);
     const arrayBuffer = await nftRes.arrayBuffer();
-    nftBase64 = Buffer.from(arrayBuffer).toString('base64');
+    const inputBuffer = Buffer.from(arrayBuffer);
+    // Convert to JPEG regardless of input format (handles WebP, PNG, GIF, etc.)
+    const jpegBuffer = await sharp(inputBuffer)
+      .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    nftBase64 = jpegBuffer.toString('base64');
   } catch (e) {
-    return res.status(500).json({ error: `Failed to fetch NFT image: ${e.message}` });
+    return res.status(500).json({ error: `Failed to process NFT image: ${e.message}` });
+  }
+
+  // Also convert the uploaded image buffer through sharp to ensure it's valid JPEG
+  let cleanUserBase64 = cleanBase64;
+  try {
+    const userBuffer = Buffer.from(cleanBase64, 'base64');
+    const jpegBuffer = await sharp(userBuffer)
+      .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    cleanUserBase64 = jpegBuffer.toString('base64');
+  } catch (e) {
+    // If sharp fails on user image, use as-is
+    console.error('User image sharp conversion failed:', e.message);
   }
 
   try {
@@ -55,15 +67,9 @@ export default async function handler(req, res) {
           role: 'user',
           content: [
             { type: 'text', text: 'Reference image:' },
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/jpeg', data: cleanBase64 }
-            },
+            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: cleanUserBase64 } },
             { type: 'text', text: 'NFT to compare:' },
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: nftMediaType, data: nftBase64 }
-            },
+            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: nftBase64 } },
             { type: 'text', text: 'JSON only:' },
           ],
         }],
@@ -86,4 +92,4 @@ export default async function handler(req, res) {
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
-}
+};

@@ -1,10 +1,10 @@
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   if (!process.env.OPENSEA_API_KEY) return res.status(500).json({ error: 'OPENSEA_API_KEY env var not set' });
 
-  const { limit = 30 } = req.query;
+  const limit = req.query.limit || 30;
 
   try {
     const response = await fetch(
@@ -18,14 +18,12 @@ export default async function handler(req, res) {
     );
 
     const raw = await response.text();
-
     if (!response.ok) {
-      return res.status(response.status).json({ error: `OpenSea error ${response.status}`, detail: raw });
+      return res.status(response.status).json({ error: `OpenSea error ${response.status}`, detail: raw.slice(0, 300) });
     }
 
-    const data = JSON.parse(raw);
-    return res.status(200).json(data);
+    return res.status(200).json(JSON.parse(raw));
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
-}
+};
